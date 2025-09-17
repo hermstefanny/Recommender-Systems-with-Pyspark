@@ -1,4 +1,4 @@
-from pyspark.sql import SparkSession
+
 from pyspark.sql import SparkSession
 from pyspark.ml.recommendation import ALS
 from pyspark.ml.evaluation import RegressionEvaluator
@@ -17,9 +17,9 @@ def get_counts(df):
   ratings_counts = df.select("rating").count()
   users_count = df.select("userId").distinct().count()
   movies_count = df.select("movieId").distinct().count()
-  ratings_by_usetId = df.groupBy("userId").count().show()
+  ratings_by_userId = df.groupBy("userId").count().show()
 
-  print(f"Total Ratings: {ratings_counts}\n Total user: {users_count}\n Movies count: {movies_count}")
+  print(f"Total Ratings: {ratings_counts}\n Total user: {users_count}\n Movies count: {movies_count} \nRatings by User: {ratings_by_userId}")
 
 
 def train_ALS_model(df, userColumn, itemColumn, ratingColumn, max_iterations, latent_factors):
@@ -63,7 +63,7 @@ def train_ALS_model(df, userColumn, itemColumn, ratingColumn, max_iterations, la
 
 if __name__ == "__main__":
 
-  spark = SparkSession.builder.appName("Movie Recommendation App").getOrCreate()
+  spark = SparkSession.builder.appName("ALS Model Creation").getOrCreate()
 
   df_ratings_small = get_raw_df(spark, "data/movie-lens-small-latest-dataset/ratings.csv")
 
