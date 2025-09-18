@@ -1,8 +1,10 @@
 from pyspark.sql import SparkSession
 import streamlit as st
 import pyspark.sql.functions as sqlf
+from pyspark.ml.recommendation import ALSModel
+from pyspark.sql.types import StructType, StructField, IntegerType, FloatType
 
-from streamlit_card import card
+from app.als_model import get_new_prediction
 
 
 if __name__ == "__main__":
@@ -73,4 +75,28 @@ st.write("Your ratings for movies:")
 st.write(user_ratings)
 
 
+def get_new_user_ratings(user_ratings):
+  userId = 3000
+  user_schema = StructType([
+    StructField("movieId", IntegerType(), True),
+    StructField("rating", FloatType(), True)
+])
+  ratings_modified = [{'movieId': k, 'rating': float(v)} for k, v in user_ratings.items()]
+  new_user_dataframe = spark.createDataFrame(ratings_modified, schema =user_schema)
+  new_user_dataframe.withColumn("userId", sqlf.lit(userId)).show()
 
+  st.write("New user dataframe")
+  st.write(new_user_dataframe.toPandas())
+
+  return new_user_dataframe
+
+
+st.button("Get Prediction", type="primary", use_container_width = True, on_click= get_new_user_ratings, args=(user_ratings,) )
+
+model = ALSModel.load("./models/ratings_small_model-latent-features-25")
+if model:
+  st.write ("Model loaded!")
+
+
+new_user_df = get_new_user_ratings(user_ratings)
+get_new_prediction(new_user_df, model, new_user_id=3000, top_n=10)
