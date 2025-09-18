@@ -2,16 +2,30 @@ from pyspark.sql import SparkSession
 import streamlit as st
 import pyspark.sql.functions as sqlf
 from pyspark.ml.recommendation import ALSModel
-from pyspark.sql.types import StructType, StructField, IntegerType, FloatType
+from pyspark.sql.types import StructType, StructField, IntegerType, FloatType, StringType, LongType
 
-from app.als_model import get_new_prediction
+from app.als_model import get_cold_start_prediction, get_retrained_prediction
 
 
 if __name__ == "__main__":
   # Formatting movies data
   spark = SparkSession.builder.appName("Movie Recommendation App").getOrCreate()
+  
+  movies_schema = StructType([
+    StructField("movieId", IntegerType(), True),
+    StructField("title", StringType(), True),
+    StructField("genres", StringType(), True),
+  ])
 
-  df_movies_raw = spark.read.csv("data/movie-lens-small-latest-dataset/movies.csv", header=True, inferSchema=True) 
+  ratings_schema = StructType([
+    StructField("userId", IntegerType(), True),
+    StructField("movieId", IntegerType(), True),
+    StructField("rating", FloatType(), True),
+    StructField("timestamp", LongType(), True),
+  ])
+
+  df_movies_raw = spark.read.csv("data/movielens-1m-dataset/movies.dat",  sep='::', header=False, schema = movies_schema)
+  df_ratings_raw = spark.read.csv("data/movielens-1m-dataset/ratings.dat",  sep='::', header=False, schema = ratings_schema) 
 
   df_with_genres = df_movies_raw.withColumn("genreList", sqlf.split(sqlf.col("genres"), "\\|"))
 
@@ -63,7 +77,7 @@ st.write("Your selected movies:")
 
 user_ratings = {}
 for k, v in st.session_state["user_movies"].items():
-  rating_value = st.slider(v, min_value=1.0, max_value=5.0, step =0.5)
+  rating_value = st.slider(v, min_value=1, max_value=5, step =1)
   st.write(f"Your rating:", rating_value)
   user_ratings[k] = rating_value
 
@@ -71,36 +85,52 @@ for k, v in st.session_state["user_movies"].items():
 st.write("Your ratings for movies:")
 st.write(user_ratings)
 
-
-def get_new_user_ratings(user_ratings):
-  userId = 3000
-  user_schema = StructType([
+def new_user_df(user_ratings):
+    userId = 100001
+    user_schema = StructType([
     StructField("movieId", IntegerType(), True),
     StructField("rating", FloatType(), True)
 ])
-  ratings_modified = [{'movieId': k, 'rating': float(v)} for k, v in user_ratings.items()]
-  new_user_dataframe = spark.createDataFrame(ratings_modified, schema =user_schema)
-  new_user_dataframe.withColumn("userId", sqlf.lit(userId)).show()
+    ratings_modified = [{'movieId': k, 'rating': float(v)} for k, v in user_ratings.items()]
+    new_user_dataframe = spark.createDataFrame(ratings_modified, schema =user_schema)
+    new_user_dataframe = new_user_dataframe.withColumn("userId", sqlf.lit(userId))
+
+    
+    return new_user_dataframe
+
+
+def get_cold_start_ratings(user_ratings, df_detailed):
+  new_user_dataframe = new_user_df(user_ratings)
 
   st.write("New user dataframe")
   st.write(new_user_dataframe.toPandas())
 
-  model = ALSModel.load("./models/ratings_small_model-latent-features-45")
+  # Predictions
+  model = ALSModel.load("./models/ratings_model-optimized")
 
-    
-  new_user_predictions = get_new_prediction(new_user_dataframe, model, new_user_id=3000, top_n=10)
+  ## Cold Start User Predictions
+  new_user_cold_predictions = get_cold_start_prediction(new_user_dataframe.select("userId", "movieId", "rating"), model, new_user_id=100001, top_n=10)
 
-  df_detailed
+  new_recommendations = new_user_cold_predictions.join(df_detailed, on="movieId",  how = "inner")
 
-  new_recommendations = new_user_predictions.join(df_detailed, on="movieId",  how = "inner")
-  #new_recommendations.sort("predicted_rating", ascending = [True])
-
-  st.write("New user PRED")
+  st.write("Cold Start User Predictions")
   st.write(new_recommendations.toPandas())
 
- 
 
-st.button("Get Prediction", type="primary", use_container_width = True, on_click= get_new_user_ratings, args=(user_ratings,) )
+def get_retrained_ratings(user_ratings, df_detailed):
+
+  new_user_dataframe = new_user_df(user_ratings)
+  ratings_with_new_u = df_ratings_raw.select("userId", "movieId", "rating").union(new_user_dataframe.select("userId", "movieId", "rating"))
+  new_user_ret_predictions= get_retrained_prediction(ratings_with_new_u, new_userId=100001)
+  
+  new_recommendations = new_user_ret_predictions.join(df_detailed, on="movieId",  how = "inner")
+  st.write("Retrained User Predictions")
+  st.write(new_recommendations.toPandas())
+
+
+st.button("Get Cold Start Prediction", type="primary", use_container_width = True, on_click= get_cold_start_ratings, args=(user_ratings,df_detailed,) )
+
+st.button("Get Retrained Prediction", type="primary", use_container_width = True, on_click= get_retrained_ratings, args=(user_ratings,df_detailed,) )
 
 # TO DO : Implement a button to wipe out information
 

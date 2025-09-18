@@ -3,33 +3,32 @@ from pyspark.sql import SparkSession
 from pyspark.ml.recommendation import ALS
 import pyspark.sql.functions as sqlf
 from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
 from pyspark.sql import Row
+from pyspark.sql.types import StructType, StructField, IntegerType, FloatType, LongType
 import numpy as np
 
 
 # Script to train the ALS model
 
-def get_raw_df(spark_session, file_name):
-  df_raw  = spark_session.read.csv(file_name, header=True, inferSchema=True)
-  return df_raw
+def get_ratings_df(spark_session, file_name,file_schema, separator =','):
+    df_raw  = spark_session.read.csv(file_name, sep=separator, header=False, schema = file_schema)
+    df = df_raw.select("userId", "movieId", "rating")
+    return df
 
 
 def get_counts(df):
-  '''Preliminary Statistics'''
-  ratings_counts = df.select("rating").count()
-  users_count = df.select("userId").distinct().count()
-  movies_count = df.select("movieId").distinct().count()
-  ratings_by_userId = df.groupBy("userId").count().show()
+    '''Preliminary Statistics'''
+    ratings_counts = df.select("rating").count()
+    users_count = df.select("userId").distinct().count()
+    movies_count = df.select("movieId").distinct().count()
+    ratings_by_userId = df.groupBy("userId").count().show()
 
-  print(f"Total Ratings: {ratings_counts}\n Total user: {users_count}\n Movies count: {movies_count} \nRatings by User: {ratings_by_userId}")
+    print(f"Total Ratings: {ratings_counts}\n Total user: {users_count}\n Movies count: {movies_count} \nRatings by User: {ratings_by_userId}")
 
 
-def train_ALS_model(df, userColumn, itemColumn, ratingColumn, max_iterations=20, latent_factors=45):
-  
-  # Divide in training/test datasets
-  (train, test) = df.randomSplit([0.8, 0.2], seed=42)
-  
-  # Define ALS model
+def train_ALS_model(train,  userColumn ="userId", itemColumn = "movieId", ratingColumn = "rating", max_iterations=20, latent_factors=10):
+ 
   als = ALS(
     maxIter=max_iterations,
     regParam=0.1,
@@ -45,32 +44,66 @@ def train_ALS_model(df, userColumn, itemColumn, ratingColumn, max_iterations=20,
   print("Training ALS model ....\n")
   model = als.fit(train)
 
-  # Test model
-  print("Getting predictions for evaluation....\n")
-  predictions = model.transform(test)
-
-  evaluator = RegressionEvaluator(
-      metricName="rmse",
-      labelCol="rating",
-      predictionCol="prediction"
-  )
-
-  print("Getting Evaluation Parameters")
-  rmse = evaluator.evaluate(predictions)
-  print(f"Root-mean-square error = {rmse:.4f}")
-
+  
   return model
+
+
+def test_ALS_model(model, test):
+    # Test model
+    print("Getting predictions for evaluation....\n")
+    predictions = model.transform(test)
+
+    evaluator = RegressionEvaluator(
+        metricName="rmse",
+        labelCol="rating",
+        predictionCol="prediction"
+    )
+
+    print("")
+    rmse = evaluator.evaluate(predictions)
+    print(f"Root-mean-square error on test data = {rmse:.4f}")
   
 
+def fine_tune_ALS(train_set, validation_set, latent_factors, regParams, maxIter=15):
+    ''' Function to fine tune ALS model and get the best model with optimized parameters'''
+    
+    print("Building model...")
+    als = ALS(userCol = "userId", itemCol = "movieId", ratingCol = "rating", coldStartStrategy = "drop", maxIter = maxIter)
+    
+    print("Creating the parameter grid...")
+    paramGrid = ParamGridBuilder().addGrid(als.rank, latent_factors).addGrid(als.regParam, regParams).build()
 
-def get_new_prediction(new_ratings_df, model, new_user_id=3000, top_n=10):
+    print("Appplying the evaluator...")
+    evaluator = RegressionEvaluator(metricName = "rmse", labelCol = "rating", predictionCol = "prediction")
+
+    print("Initializing cross validation...")
+    cv = CrossValidator(estimator = als, estimatorParamMaps = paramGrid, evaluator = evaluator, numFolds = 3)
+
+    cv_model = cv.fit(train_set)
+
+    print("Evaluating on validation set...")
+    predictions = cv_model.bestModel.transform(validation_set)
+    rmse_val = evaluator.evaluate(predictions)
+
+    # Parameters for the best model
+    best_rank = cv_model.bestModel.rank
+    best_reg = cv_model.bestModel._java_obj.parent().getRegParam()
+    best_maxIter = cv_model.bestModel._java_obj.parent().getMaxIter()
+
+    print(f"\nBest ALS parameters → rank={best_rank}, regParam={best_reg}, maxIter={best_maxIter}")
+    print(f"\nBest model RMSE on validation data: {rmse_val}")
+
+    return cv_model.bestModel
+
+
+def get_cold_start_prediction(new_user_ratings_df, model, new_user_id=100001, top_n=10):
     '''
     Cold-start ALS: recommend for a new user without retraining.
     '''
     # Join new ratings with item factors
-    rated = new_ratings_df.join(model.itemFactors,
-                                new_ratings_df.movieId == model.itemFactors.id,
-                                "inner").select("rating", "features")
+    rated = new_user_ratings_df.join(model.itemFactors,
+                                  new_user_ratings_df.movieId == model.itemFactors.id,
+                                  "inner").select("rating", "features")
 
     # Build synthetic user vector (weighted avg)
     rows = rated.collect()
@@ -79,25 +112,45 @@ def get_new_prediction(new_ratings_df, model, new_user_id=3000, top_n=10):
     try:
       user_vector = num / den
     except Exception as e:
-      print (e)
-       
+      print (e)    
 
     # UDF for dot product
     def dot(features):
-        return float(np.dot(user_vector, features))
+          return float(np.dot(user_vector, features))
     dot_udf = sqlf.udf(dot, "double")
 
     # Predict scores for all items
     preds = model.itemFactors.withColumn("prediction", dot_udf("features")) \
-                             .withColumn("userId", sqlf.lit(new_user_id)) \
-                             .select("userId", sqlf.col("id").alias("movieId"), "prediction")
+                              .withColumn("userId", sqlf.lit(new_user_id)) \
+                              .select("userId", sqlf.col("id").alias("movieId"), "prediction")
 
     # Exclude already rated
-    rated_ids = [r.movieId for r in new_ratings_df.collect()]
+    rated_ids = [r.movieId for r in new_user_ratings_df.collect()]
     preds = preds.filter(~sqlf.col("movieId").isin(rated_ids))
 
     return preds.orderBy(sqlf.desc("prediction")).limit(top_n)
 
+
+
+def get_retrained_prediction(new_user_ratings_df, new_userId):
+
+    new_model = train_ALS_model(new_user_ratings_df)
+
+    new_user_ratings_df.filter(new_user_ratings_df.userId ==new_userId).show()
+
+    userRecs = new_model.recommendForAllUsers(5)
+    new_UserRec= userRecs.filter(userRecs.userId == new_userId)
+
+    flat_new_UserRec = new_UserRec.withColumn("rec", sqlf.explode(sqlf.col("recommendations"))) \
+    .select(
+        sqlf.col("userId"),
+        sqlf.col("rec.movieId").alias("movieId"),
+        sqlf.col("rec.rating").alias("predicted_rating")
+    )
+    
+    flat_new_UserRec.show()
+
+    return flat_new_UserRec
 
 
 
@@ -105,11 +158,34 @@ if __name__ == "__main__":
 
   spark = SparkSession.builder.appName("ALS Model Creation").getOrCreate()
 
-  df_ratings_small = get_raw_df(spark, "data/movie-lens-small-latest-dataset/ratings.csv")
+  ratings_schema = StructType([
+    StructField("userId", IntegerType(), True),
+    StructField("movieId", IntegerType(), True),
+    StructField("rating", FloatType(), True),
+    StructField("timestamp", LongType(), True),
+  ])
 
-  als_model = train_ALS_model(df_ratings_small, "userId", "movieId", "rating")
+  df_ratings = get_ratings_df(spark, "data/movielens-1m-dataset/ratings.dat", ratings_schema,'::' )
 
-  # Saving model for later use
+  
+  (train, test) = df_ratings.randomSplit([0.8, 0.2], seed=42)
+
+  # Model without cross-validation
+  #als_model.write().overwrite().save("models/ratings_model-latent-features-45")
+
+  #als_model = train_ALS_model(train, test, "userId", "movieId", "rating")
+
+
+  # Optimized Model
+  (train_set, validation_set) = train.randomSplit([0.8, 0.2], seed=30)
+
+  latent_factors = [10, 15, 20, 25, 30, 35, 40, 45, 50]
+  regParams = [0.05, 0.1, 0.15]
+  optimized_als_model= fine_tune_ALS(train_set, validation_set, latent_factors, regParams)
+
+  test_ALS_model(optimized_als_model, test)
+
   print("\nSaving model...")
-  als_model.write().overwrite().save("models/ratings_small_model-latent-features-45")
+
+  optimized_als_model.write().overwrite().save("models/ratings_model-optimized")
   print("\n\nModel saved")
