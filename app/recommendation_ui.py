@@ -8,7 +8,7 @@ from app.als_model import get_new_prediction
 
 
 if __name__ == "__main__":
-  # Working to refine the movies data
+  # Formatting movies data
   spark = SparkSession.builder.appName("Movie Recommendation App").getOrCreate()
 
   df_movies_raw = spark.read.csv("data/movie-lens-small-latest-dataset/movies.csv", header=True, inferSchema=True) 
@@ -19,8 +19,6 @@ if __name__ == "__main__":
 
   df_detailed = df_with_genres.withColumn("movieTitle", title_split.getItem(0)).withColumn("year", title_split.getItem(1))
   df_detailed = df_detailed.withColumn("year", sqlf.regexp_replace("year", "\\)", ""))
-
-  df_detailed.show(5)
 
   # Streamlit APP
   st.title("Movie Recommender")
@@ -35,9 +33,8 @@ if __name__ == "__main__":
 
   results = filtered_movies[['movieId','title', 'movieTitle', 'genreList', 'year']].toPandas()
   results_dict = results[['movieId', 'title']].set_index('movieId').to_dict()['title']
-  print(results_dict)
   
-  st.write(results_dict)
+  #st.write(results_dict)
 
   user_movies = dict()
 
@@ -62,11 +59,11 @@ if __name__ == "__main__":
     )
 
 st.write("Your selected movies:")
-st.write(st.session_state["user_movies"])
+#st.write(st.session_state["user_movies"])
 
 user_ratings = {}
 for k, v in st.session_state["user_movies"].items():
-  rating_value = st.slider(v, min_value=1, max_value=5, step =1)
+  rating_value = st.slider(v, min_value=1.0, max_value=5.0, step =0.5)
   st.write(f"Your rating:", rating_value)
   user_ratings[k] = rating_value
 
@@ -88,15 +85,26 @@ def get_new_user_ratings(user_ratings):
   st.write("New user dataframe")
   st.write(new_user_dataframe.toPandas())
 
-  return new_user_dataframe
+  model = ALSModel.load("./models/ratings_small_model-latent-features-45")
 
+    
+  new_user_predictions = get_new_prediction(new_user_dataframe, model, new_user_id=3000, top_n=10)
+
+  df_detailed
+
+  new_recommendations = new_user_predictions.join(df_detailed, on="movieId",  how = "inner")
+  #new_recommendations.sort("predicted_rating", ascending = [True])
+
+  st.write("New user PRED")
+  st.write(new_recommendations.toPandas())
+
+ 
 
 st.button("Get Prediction", type="primary", use_container_width = True, on_click= get_new_user_ratings, args=(user_ratings,) )
 
-model = ALSModel.load("./models/ratings_small_model-latent-features-25")
-if model:
-  st.write ("Model loaded!")
+# TO DO : Implement a button to wipe out information
 
 
-new_user_df = get_new_user_ratings(user_ratings)
-get_new_prediction(new_user_df, model, new_user_id=3000, top_n=10)
+
+
+
