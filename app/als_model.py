@@ -166,7 +166,11 @@ def get_retrained_prediction(ratings_with_new_user, new_userId):
 
 if __name__ == "__main__":
 
-  spark = SparkSession.builder.appName("ALS Model Creation").getOrCreate()
+  spark = SparkSession.builder.appName("ALS Model Creation")\
+  .config("spark.driver.memory", "8g")\
+  .config("spark.executor.memory", "8g")\
+  .config("spark.driver.max.ResultSize", "8g")\
+  .getOrCreate()
 
   ratings_schema = StructType([
     StructField("userId", IntegerType(), True),

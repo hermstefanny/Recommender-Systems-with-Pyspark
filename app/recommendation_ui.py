@@ -166,21 +166,12 @@ with right_column:
 
 
 output_area = st.container()
-
-if st.button("Other chance",
-             type="primary",
-             use_container_width = True
-             ): 
-    st.session_state.clear()   # wipes all state
-    st.rerun()     
+   
 
 with output_area:
   st.subheader(" 🎬 What you should watch next 🎬")
 
-  # for index, row in retrained_df.iterrows():
-  #   card(
-  #       title=row["movieTitle"],
-  #       text = row['genres'])
+
 
   cols = st.columns(5)  
   for i, (_, row) in enumerate(recs_df.iterrows()):
