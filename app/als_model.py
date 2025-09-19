@@ -27,11 +27,11 @@ def get_counts(df):
     print(f"Total Ratings: {ratings_counts}\n Total user: {users_count}\n Movies count: {movies_count} \nRatings by User: {ratings_by_userId}")
 
 
-def train_ALS_model(train,  userColumn ="userId", itemColumn = "movieId", ratingColumn = "rating", max_iterations=20, latent_factors=10):
+def train_ALS_model(train,  userColumn ="userId", itemColumn = "movieId", ratingColumn = "rating",regParam =0.1, max_iterations=20, latent_factors=10):
  
   als = ALS(
     maxIter=max_iterations,
-    regParam=0.1,
+    regParam=regParam,
     rank=latent_factors,
     userCol=userColumn,
     itemCol=itemColumn,
@@ -132,13 +132,13 @@ def get_cold_start_prediction(new_user_ratings_df, model, new_user_id=100001, to
 
 
 
-def get_retrained_prediction(new_user_ratings_df, new_userId):
+def get_retrained_prediction(ratings_with_new_user, new_userId):
 
-    new_model = train_ALS_model(new_user_ratings_df)
+    new_model = train_ALS_model(ratings_with_new_user)
 
-    new_user_ratings_df.filter(new_user_ratings_df.userId ==new_userId).show()
+    ratings_with_new_user.filter(ratings_with_new_user.userId ==new_userId).show()
 
-    userRecs = new_model.recommendForAllUsers(5)
+    userRecs = new_model.recommendForAllUsers(10)
     new_UserRec= userRecs.filter(userRecs.userId == new_userId)
 
     flat_new_UserRec = new_UserRec.withColumn("rec", sqlf.explode(sqlf.col("recommendations"))) \
@@ -147,10 +147,20 @@ def get_retrained_prediction(new_user_ratings_df, new_userId):
         sqlf.col("rec.movieId").alias("movieId"),
         sqlf.col("rec.rating").alias("predicted_rating")
     )
-    
-    flat_new_UserRec.show()
 
-    return flat_new_UserRec
+    rated_ids = (
+        ratings_with_new_user
+        .filter(sqlf.col("userId") == new_userId)
+        .select("movieId")
+        .rdd.flatMap(lambda x: x)
+        .collect()
+    )
+
+    final_predictions = flat_new_UserRec.filter(~sqlf.col("movieId").isin(rated_ids))
+    
+    final_predictions.show()
+
+    return final_predictions
 
 
 
